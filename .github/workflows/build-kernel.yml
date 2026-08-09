@@ -1,0 +1,185 @@
+name: Build Kernel and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even when this upstream version was already released
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: '23 4 * * *'
+  push:
+    paths:
+      - scripts/**
+      - patches/**
+      - .github/workflows/build-kernel.yml
+      - .github/workflows/build-builder.yml
+
+jobs:
+  detect-upstream:
+    runs-on: ubuntu-26.04-arm
+    permissions:
+      contents: read
+    outputs:
+      build: ${{ steps.version.outputs.build }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      zfs_version: ${{ steps.version.outputs.zfs_version }}
+    steps:
+      - id: version
+        env:
+          FORCE: ${{ inputs.force }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          major=
+          minor=
+          patch=
+          while IFS='=' read -r key value; do
+            key="${key// /}"
+            value="${value// /}"
+            case "$key" in
+              VERSION) major="$value" ;;
+              PATCHLEVEL) minor="$value" ;;
+              SUBLEVEL) patch="$value" ;;
+            esac
+          done < <(curl -fsSL https://raw.githubusercontent.com/ophub/linux-6.18.y/main/Makefile)
+
+          version="$major.$minor.$patch"
+          tag="$version-pve"
+          test -n "$major" && test -n "$minor" && test -n "$patch"
+          zfs_tag="$(gh api repos/openzfs/zfs/releases/latest --jq .tag_name)"
+          case "$zfs_tag" in
+            zfs-[0-9]*.[0-9]*.[0-9]*) zfs_version="${zfs_tag#zfs-}" ;;
+            *) printf 'Unexpected OpenZFS release tag: %s\n' "$zfs_tag" >&2; exit 1 ;;
+          esac
+
+          if [[ "$FORCE" == true ]] || ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            build=true
+          else
+            build=false
+          fi
+
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'zfs_version=%s\n' "$zfs_version" >> "$GITHUB_OUTPUT"
+          printf 'build=%s\n' "$build" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: detect-upstream
+    if: needs.detect-upstream.outputs.build == 'true'
+    runs-on: ubuntu-26.04-arm
+    env:
+      ZFS_VERSION: ${{ needs.detect-upstream.outputs.zfs_version }}
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore compiler cache
+        uses: actions/cache/restore@v6
+        with:
+          path: .cache/ccache
+          key: ccache-arm64-gcc15-${{ hashFiles('scripts/**', 'patches/**') }}
+          restore-keys: |
+            ccache-arm64-gcc15-
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build kernel packages
+        run: |
+          chmod +x scripts/docker-kernel-pve.sh scripts/build-kernel-pve.sh scripts/package-kernel-pve.sh
+          ./scripts/docker-kernel-pve.sh
+
+      - name: Save compiler cache
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: .cache/ccache
+          key: ccache-arm64-gcc15-${{ hashFiles('scripts/**', 'patches/**') }}
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: pve-kernel-packages
+          path: packages-ophub/*.deb
+          if-no-files-found: error
+
+      - name: Publish kernel release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.detect-upstream.outputs.tag }}
+          VERSION: ${{ needs.detect-upstream.outputs.version }}
+          ZFS_VERSION: ${{ needs.detect-upstream.outputs.zfs_version }}
+        run: |
+          notes="Automated build Linux kernel $VERSION with native OpenZFS $ZFS_VERSION modules."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" packages-ophub/*.deb --clobber
+            gh release edit "$TAG" --title "$TAG" --notes "$notes"
+          else
+            gh release create "$TAG" packages-ophub/*.deb \
+              --title "$TAG" \
+              --notes "$notes"
+          fi
+
+  publish-apt-repository:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    env:
+      REPOSITORY_NAME: pve-kernel
+      CODENAME: trixie
+      COMPONENT: main
+      ARCHITECTURE: arm64
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/configure-pages@v6
+
+      - name: Install reprepro
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends reprepro
+
+      - name: Download kernel packages
+        uses: actions/download-artifact@v8
+        with:
+          name: pve-kernel-packages
+          path: packages
+
+      - name: Build signed APT repository
+        id: apt-repository
+        env:
+          SCAN_DIR: packages
+          SIGNING_KEY: ${{ secrets.APT_REPOSITORY_SIGNING_KEY }}
+        run: scripts/build-apt-repository.sh
+
+      - name: Upload APT repository to Pages
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: ${{ steps.apt-repository.outputs.dir }}
+
+  deploy-apt-repository:
+    needs: publish-apt-repository
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy APT repository to Pages
+        id: deploy
+        uses: actions/deploy-pages@v5
