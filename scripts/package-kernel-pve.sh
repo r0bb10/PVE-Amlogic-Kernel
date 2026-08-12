@@ -40,7 +40,7 @@ Maintainer: Local Proxmox administrator
 Provides: linux-image-ophub
 Section: kernel
 Priority: optional
-Description: Custom ophub Linux $release for Amlogic Proxmox VE
+Description: Proxmox Kernel Image for Amlogic
  This package deliberately does not run UEFI, GRUB, or proxmox-boot-tool hooks.
 EOF
 cat > "$image_stage/DEBIAN/postinst" <<EOF
@@ -97,7 +97,7 @@ Architecture: arm64
 Maintainer: Local Proxmox administrator
 Section: kernel
 Priority: optional
-Description: Headers for custom ophub Linux $release
+Description: Proxmox Kernel Headers for Amlogic
 EOF
 
 if [[ ! -d "$zfs_source/.git" ]]; then
@@ -137,7 +137,7 @@ Depends: linux-image-$release (= $version), zfsutils-linux (>= $zfs_version)
 Provides: zfs-modules
 Section: kernel
 Priority: optional
-Description: Native OpenZFS modules for custom ophub Linux $release
+Description: OpenZFS Modules for Amlogic Kernel
  Native modules for this kernel release; no DKMS build is required.
 EOF
 cat > "$zfs_stage/DEBIAN/postinst" <<EOF
@@ -157,7 +157,7 @@ Maintainer: Local Proxmox administrator
 Depends: linux-image-$release (= $version), linux-headers-$release (= $version), zfs-modules-$release (= $version)
 Section: kernel
 Priority: optional
-Description: Rolling metapackage for the custom PVE kernel
+Description: Proxmox Metapackage for Amlogic
  Installing upgrades this system to the current custom PVE kernel release.
 EOF
 
