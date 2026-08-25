@@ -6,7 +6,8 @@
 # PVE Kernel for S905X3
 
 This repository follows new releases from [ophub/linux-6.18.y](https://github.com/ophub/linux-6.18.y)
-and builds an S905X3 kernel release named `-pve` with the corrisponding latest stable OpenZFS modules.
+and builds an S905X3 kernel release named `-pve` with the corresponding latest stable OpenZFS
+modules embedded in the kernel image package, versioned `-pve1` like official Proxmox builds.
 
 
 ## Install

@@ -37,11 +37,12 @@ Package: linux-image-$release
 Version: $version
 Architecture: arm64
 Maintainer: Local Proxmox administrator
-Provides: linux-image-ophub
+Provides: linux-image-ophub, zfs-modules
 Section: kernel
 Priority: optional
 Description: Proxmox Kernel Image for Amlogic
  This package deliberately does not run UEFI, GRUB, or proxmox-boot-tool hooks.
+ OpenZFS $zfs_version-pve1 modules are bundled under /usr/lib/modules.
 EOF
 cat > "$image_stage/DEBIAN/postinst" <<EOF
 #!/bin/sh
@@ -106,6 +107,7 @@ else
     git -C "$zfs_source" reset --hard "zfs-$zfs_version"
     git -C "$zfs_source" clean -fdx
 fi
+sed -i 's/^RELEASE=.*/RELEASE=pve1/' "$zfs_source/META"
 (cd "$zfs_source" && ./autogen.sh)
 rm -rf "$zfs_build"
 mkdir -p "$zfs_build/module"
@@ -121,31 +123,12 @@ mkdir -p "$zfs_build/module"
 )
 find "$zfs_build/module" -type f -name '*.ko' -exec aarch64-none-linux-gnu-strip --strip-debug {} +
 
-zfs_stage="$stage_dir/zfs-modules-$release"
-zfs_modules="$zfs_stage/usr/lib/modules/$release/zfs"
-mkdir -p "$zfs_stage/DEBIAN" "$zfs_modules"
+zfs_modules_dest="$image_stage/usr/lib/modules/$release/zfs"
+mkdir -p "$zfs_modules_dest"
 while IFS= read -r -d '' module; do
-    install -m 0644 "$module" "$zfs_modules/$(basename "$module")"
+    install -m 0644 "$module" "$zfs_modules_dest/$(basename "$module")"
 done < <(find "$zfs_build/module" -type f -name '*.ko' -print0)
-[[ -n "$(ls -A "$zfs_modules")" ]] || { printf 'No OpenZFS modules were produced.\n' >&2; exit 1; }
-cat > "$zfs_stage/DEBIAN/control" <<EOF
-Package: zfs-modules-$release
-Version: $version
-Architecture: arm64
-Maintainer: Local Proxmox administrator
-Depends: linux-image-$release (= $version), zfsutils-linux (>= $zfs_version)
-Provides: zfs-modules
-Section: kernel
-Priority: optional
-Description: OpenZFS Modules for Amlogic Kernel
- Native modules for this kernel release; no DKMS build is required.
-EOF
-cat > "$zfs_stage/DEBIAN/postinst" <<EOF
-#!/bin/sh
-set -e
-/sbin/depmod -a $release
-EOF
-chmod 0755 "$zfs_stage/DEBIAN/postinst"
+[[ -n "$(ls -A "$zfs_modules_dest")" ]] || { printf 'No OpenZFS modules were produced.\n' >&2; exit 1; }
 
 pve_kernel_stage="$stage_dir/pve-kernel"
 mkdir -p "$pve_kernel_stage/DEBIAN"
@@ -154,14 +137,14 @@ Package: pve-kernel
 Version: $version
 Architecture: arm64
 Maintainer: Local Proxmox administrator
-Depends: linux-image-$release (= $version), linux-headers-$release (= $version), zfs-modules-$release (= $version)
+Depends: linux-image-$release (= $version), linux-headers-$release (= $version), zfsutils-linux (>= $zfs_version)
 Section: kernel
 Priority: optional
 Description: Proxmox Metapackage for Amlogic
  Installing upgrades this system to the current custom PVE kernel release.
 EOF
 
-for stage in "$image_stage" "$headers_stage" "$zfs_stage" "$pve_kernel_stage"; do
+for stage in "$image_stage" "$headers_stage" "$pve_kernel_stage"; do
     package_name=$(basename "$stage")
     dpkg-deb --build "$stage" "$package_dir/${package_name}_arm64.deb"
 done
